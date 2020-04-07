@@ -71,6 +71,7 @@ Plot types
 
 * Polygons with fills - ``plot``
 * Drop pins. - ``marker``
+* Popups. - ``popup`` (implemented as described here https://developers.google.com/maps/documentation/javascript/examples/overlay-popup?hl=it)
 * Scatter points. - ``scatter``
 * Grid lines. - ``grid``
 * Heatmaps. - ``heatmap``
@@ -80,11 +81,5 @@ Plot types
 Misc.
 -----
 
-Code hosted on `GitHub <https://github.com/vgm64/gmplot>`_
-
-Install easily with ``pip install gmplot`` from PyPI.
-
-Inspired by Yifei Jiang's (jiangyifei@gmail.com) pygmaps_ module.
-
-.. _pygmaps: http://code.google.com/p/pygmaps/
-
+Thanks to `GitHub <https://github.com/vgm64/gmplot>`_
+I needed only a popup.
