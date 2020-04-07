@@ -1,22 +1,9 @@
-from __future__ import absolute_import
-
-import json
 import math
-import os
 import requests
-import warnings
+import json
+import os
 
-from collections import namedtuple
-
-from gmplot.color_dicts import mpl_color_map, html_color_codes
-from gmplot.google_maps_templates import SYMBOLS, CIRCLE
-
-
-Symbol = namedtuple('Symbol', ['symbol', 'lat', 'long', 'size'])
-
-
-class InvalidSymbolError(Exception):
-    pass
+from .color_dicts import mpl_color_map, html_color_codes
 
 
 def safe_iter(var):
@@ -36,10 +23,8 @@ class GoogleMapPlotter(object):
         self.paths = []
         self.shapes = []
         self.points = []
-        self.circles = []
-        self.symbols = []
+        self.popups = []
         self.heatmap_points = []
-        self.ground_overlays = []
         self.radpoints = []
         self.gridsetting = None
         self.coloricon = os.path.join(os.path.dirname(__file__), 'markers/%s.png')
@@ -69,7 +54,7 @@ class GoogleMapPlotter(object):
         color = self.html_color_codes.get(color, color)
         self.points.append((lat, lng, color[1:], title))
 
-    def scatter(self, lats, lngs, color=None, size=None, marker=True, c=None, s=None, symbol='o', **kwargs):
+    def scatter(self, lats, lngs, color=None, size=None, marker=True, c=None, s=None, **kwargs):
         color = color or c
         size = size or s or 40
         kwargs["color"] = color
@@ -79,15 +64,10 @@ class GoogleMapPlotter(object):
             if marker:
                 self.marker(lat, lng, settings['color'])
             else:
-                self._add_symbol(Symbol(symbol, lat, lng, size), **settings)
+                self.circle(lat, lng, size, **settings)
 
-    def _add_symbol(self, symbol, color=None, c=None, **kwargs):
-        color = color or c
-        kwargs.setdefault('face_alpha', 0.5)
-        kwargs.setdefault('face_color', "#000000")
-        kwargs.setdefault("color", color)
-        settings = self._process_kwargs(kwargs)
-        self.symbols.append((symbol, settings))
+    def popup(self, id, lat, lng, content):
+        self.popups.append((id, lat, lng, content))
 
     def circle(self, lat, lng, radius, color=None, c=None, **kwargs):
         color = color or c
@@ -95,7 +75,8 @@ class GoogleMapPlotter(object):
         kwargs.setdefault('face_color', "#000000")
         kwargs.setdefault("color", color)
         settings = self._process_kwargs(kwargs)
-        self.circles.append(((lat, lng, radius), settings))
+        path = self.get_cycle(lat, lng, radius)
+        self.shapes.append((path, settings))
 
     def _process_kwargs(self, kwargs):
         settings = dict()
@@ -133,6 +114,7 @@ class GoogleMapPlotter(object):
                 settings[key] = color
 
         settings["closed"] = kwargs.get("closed", None)
+
         return settings
 
     def plot(self, lats, lngs, color=None, c=None, **kwargs):
@@ -142,24 +124,19 @@ class GoogleMapPlotter(object):
         path = zip(lats, lngs)
         self.paths.append((path, settings))
 
-    def heatmap(self, lats, lngs, threshold=10, radius=10, gradient=None, opacity=0.6, maxIntensity=1, dissipating=True):
+    def heatmap(self, lats, lngs, threshold=10, radius=10, gradient=None, opacity=0.6, dissipating=True):
         """
         :param lats: list of latitudes
         :param lngs: list of longitudes
-        :param maxIntensity:(int) max frequency to use when plotting. Default (None) uses max value on map domain.
         :param threshold:
         :param radius: The hardest param. Example (string):
         :return:
         """
         settings = {}
-        # Try to give anyone using threshold a heads up.
-        if threshold != 10:
-            warnings.warn("The 'threshold' kwarg is deprecated, replaced in favor of maxIntensity.")
         settings['threshold'] = threshold
         settings['radius'] = radius
         settings['gradient'] = gradient
         settings['opacity'] = opacity
-        settings['maxIntensity'] = maxIntensity
         settings['dissipating'] = dissipating
         settings = self._process_heatmap_kwargs(settings)
 
@@ -172,7 +149,6 @@ class GoogleMapPlotter(object):
         settings_string = ''
         settings_string += "heatmap.set('threshold', %d);\n" % settings_dict['threshold']
         settings_string += "heatmap.set('radius', %d);\n" % settings_dict['radius']
-        settings_string += "heatmap.set('maxIntensity', %d);\n" % settings_dict['maxIntensity']
         settings_string += "heatmap.set('opacity', %f);\n" % settings_dict['opacity']
 
         dissipation_string = 'true' if settings_dict['dissipating'] else 'false'
@@ -190,34 +166,6 @@ class GoogleMapPlotter(object):
 
         return settings_string
 
-    def ground_overlay(self, url, bounds_dict):
-        '''
-        :param url: Url of image to overlay
-        :param bounds_dict: dict of the form  {'north': , 'south': , 'west': , 'east': }
-        setting the image container
-        :return: None
-        Example use:
-        import gmplot
-        gmap = gmplot.GoogleMapPlotter(37.766956, -122.438481, 13)
-        bounds_dict = {'north':37.832285, 'south': 37.637336, 'west': -122.520364, 'east': -122.346922}
-        gmap.ground_overlay('http://explore.museumca.org/creeks/images/TopoSFCreeks.jpg', bounds_dict)
-        gmap.draw("my_map.html")
-        Google Maps API documentation
-        https://developers.google.com/maps/documentation/javascript/groundoverlays#introduction
-        '''
-
-        bounds_string = self._process_ground_overlay_image_bounds(bounds_dict)
-        self.ground_overlays.append((url, bounds_string))
-
-    def _process_ground_overlay_image_bounds(self, bounds_dict):
-        bounds_string = 'var imageBounds = {'
-        bounds_string += "north:  %.4f,\n" % bounds_dict['north']
-        bounds_string += "south:  %.4f,\n" % bounds_dict['south']
-        bounds_string += "east:  %.4f,\n" % bounds_dict['east']
-        bounds_string += "west:  %.4f};\n" % bounds_dict['west']
-
-        return bounds_string
-
     def polygon(self, lats, lngs, color=None, c=None, **kwargs):
         color = color or c
         kwargs.setdefault("color", color)
@@ -225,10 +173,9 @@ class GoogleMapPlotter(object):
         shape = zip(lats, lngs)
         self.shapes.append((shape, settings))
 
+    # create the html file which include one google map and all points and
+    # paths
     def draw(self, htmlfile):
-        """Create the html file which include one google map and all points and paths. If 
-        no string is provided, return the raw html.
-        """
         f = open(htmlfile, 'w')
         f.write('<html>\n')
         f.write('<head>\n')
@@ -236,22 +183,26 @@ class GoogleMapPlotter(object):
             '<meta name="viewport" content="initial-scale=1.0, user-scalable=no" />\n')
         f.write(
             '<meta http-equiv="content-type" content="text/html; charset=UTF-8"/>\n')
-        f.write('<title>Google Maps - gmplot </title>\n')
+        f.write('<title>Google Maps - pygmaps </title>\n')
+        f.write('<style>\n')
+        self.write_popup_styles(f)
+        f.write('</style>\n')
+        f.write('<script type="text/javascript">\n')
+        self.write_popup_class(f)
+        f.write('</script>\n')
         if self.apikey:
-            f.write('<script type="text/javascript" src="https://maps.googleapis.com/maps/api/js?libraries=visualization&sensor=true_or_false&key=%s"></script>\n' % self.apikey )
+            f.write('<script type="text/javascript" src="https://maps.googleapis.com/maps/api/js?libraries=visualization&sensor=true_or_false&callback=initCallback&key=%s"></script>\n' % self.apikey )
         else:
-            f.write('<script type="text/javascript" src="https://maps.googleapis.com/maps/api/js?libraries=visualization&sensor=true_or_false"></script>\n' )
+            f.write('<script type="text/javascript" src="https://maps.googleapis.com/maps/api/js?libraries=visualization&sensor=true_or_false&callback=initCallback"></script>\n' )
         f.write('<script type="text/javascript">\n')
         f.write('\tfunction initialize() {\n')
         self.write_map(f)
         self.write_grids(f)
         self.write_points(f)
         self.write_paths(f)
-        self.write_circles(f)
-        self.write_symbols(f)
         self.write_shapes(f)
         self.write_heatmap(f)
-        self.write_ground_overlay(f)
+        self.write_popup_instantations(f)
         f.write('\t}\n')
         f.write('</script>\n')
         f.write('</head>\n')
@@ -259,6 +210,7 @@ class GoogleMapPlotter(object):
             '<body style="margin:0px; padding:0px;" onload="initialize()">\n')
         f.write(
             '\t<div id="map_canvas" style="width: 100%; height: 100%;"></div>\n')
+        self.write_popup_contents_in_dom(f)
         f.write('</body>\n')
         f.write('</html>\n')
         f.close()
@@ -298,13 +250,24 @@ class GoogleMapPlotter(object):
         for point in self.points:
             self.write_point(f, point[0], point[1], point[2], point[3])
 
-    def write_circles(self, f):
-        for circle, settings in self.circles:
-            self.write_circle(f, circle[0], circle[1], circle[2], settings)
+    def get_cycle(self, lat, lng, rad):
+        # unit of radius: meter
+        cycle = []
+        d = (rad / 1000.0) / 6378.8
+        lat1 = (math.pi / 180.0) * lat
+        lng1 = (math.pi / 180.0) * lng
 
-    def write_symbols(self, f):
-        for symbol, settings in self.symbols:
-            self.write_symbol(f, symbol, settings)
+        r = [x * 10 for x in range(36)]
+        for a in r:
+            tc = (math.pi / 180.0) * a
+            y = math.asin(
+                math.sin(lat1) * math.cos(d) + math.cos(lat1) * math.sin(d) * math.cos(tc))
+            dlng = math.atan2(math.sin(
+                tc) * math.sin(d) * math.cos(lat1), math.cos(d) - math.sin(lat1) * math.sin(y))
+            x = ((lng1 - dlng + math.pi) % (2.0 * math.pi)) - math.pi
+            cycle.append(
+                (float(y * (180.0 / math.pi)), float(x * (180.0 / math.pi))))
+        return cycle
 
     def write_paths(self, f):
         for path, settings in self.paths:
@@ -339,31 +302,6 @@ class GoogleMapPlotter(object):
         f.write('\t\t});\n')
         f.write('\t\tmarker.setMap(map);\n')
         f.write('\n')
-
-    def write_symbol(self, f, symbol, settings):
-        strokeColor = settings.get('color') or settings.get('edge_color')
-        strokeOpacity = settings.get('edge_alpha')
-        strokeWeight = settings.get('edge_width')
-        fillColor = settings.get('face_color')
-        fillOpacity = settings.get('face_alpha')
-        try:
-            template = SYMBOLS[symbol.symbol]
-        except KeyError:
-            raise InvalidSymbolError("Symbol %s is not implemented" % symbol.symbol)
-
-        f.write(template.format(lat=symbol.lat, long=symbol.long, size=symbol.size, strokeColor=strokeColor,
-                                strokeOpacity=strokeOpacity, strokeWeight=strokeWeight,
-                                fillColor=fillColor, fillOpacity=fillOpacity))
-
-    def write_circle(self, f, lat, long, size, settings):
-        strokeColor = settings.get('color') or settings.get('edge_color')
-        strokeOpacity = settings.get('edge_alpha')
-        strokeWeight = settings.get('edge_width')
-        fillColor = settings.get('face_color')
-        fillOpacity = settings.get('face_alpha')
-        f.write(CIRCLE.format(lat=lat, long=long, size=size, strokeColor=strokeColor,
-                              strokeOpacity=strokeOpacity, strokeWeight=strokeWeight,
-                              fillColor=fillColor, fillOpacity=fillOpacity))
 
     def write_polyline(self, f, path, settings):
         clickable = False
@@ -437,16 +375,170 @@ class GoogleMapPlotter(object):
             f.write('heatmap.setMap(map);' + '\n')
             f.write(settings_string)
 
-    def write_ground_overlay(self, f):
 
-        for url, bounds_string in self.ground_overlays:
-            f.write(bounds_string)
-            f.write('var groundOverlay;' + '\n')
-            f.write('groundOverlay = new google.maps.GroundOverlay(' + '\n')
-            f.write('\n')
-            f.write("'" + url + "'," + '\n')
-            f.write('imageBounds);' + '\n')
-            f.write('groundOverlay.setMap(map);' + '\n')
+    def write_popup_styles(self, f):
+        f.write('/* The popup bubble styling. */')
+        f.write('      .popup-bubble {')
+        f.write('        /* Position the bubble centred-above its parent. */')
+        f.write('        position: absolute;')
+        f.write('        top: 0;')
+        f.write('        left: 0;')
+        f.write('        transform: translate(-50%, -100%);')
+        f.write('        /* Style the bubble. */')
+        f.write('        background-color: white;')
+        f.write('        padding: 5px;')
+        f.write('        border-radius: 5px;')
+        f.write('        font-family: sans-serif;')
+        f.write('        overflow-y: auto;')
+        f.write('        max-height: 60px;')
+        f.write('        box-shadow: 0px 2px 10px 1px rgba(0,0,0,0.5);')
+        f.write('      }')
+        f.write('      /* The parent of the bubble. A zero-height div at the top of the tip. */')
+        f.write('      .popup-bubble-anchor {')
+        f.write('        /* Position the div a fixed distance above the tip. */')
+        f.write('        position: absolute;')
+        f.write('        width: 100%;')
+        f.write('        bottom: /* TIP_HEIGHT= */ 8px;')
+        f.write('        left: 0;')
+        f.write('      }')
+        f.write('      /* This element draws the tip. */')
+        f.write('      .popup-bubble-anchor::after {')
+        f.write('        content: "";')
+        f.write('        position: absolute;')
+        f.write('        top: 0;')
+        f.write('        left: 0;')
+        f.write('        /* Center the tip horizontally. */')
+        f.write('        transform: translate(-50%, 0);')
+        f.write('        /* The tip is a https://css-tricks.com/snippets/css/css-triangle/ */')
+        f.write('        width: 0;')
+        f.write('        height: 0;')
+        f.write('        /* The tip is 8px high, and 12px wide. */')
+        f.write('        border-left: 6px solid transparent;')
+        f.write('        border-right: 6px solid transparent;')
+        f.write('        border-top: /* TIP_HEIGHT= */ 8px solid white;')
+        f.write('      }')
+        f.write('      /* JavaScript will position this div at the bottom of the popup tip. */')
+        f.write('      .popup-container {')
+        f.write('        cursor: auto;')
+        f.write('        height: 0;')
+        f.write('        position: absolute;')
+        f.write('        /* The max width of the info window. */')
+        f.write('        width: 200px;')
+        f.write('      }')
+
+    def write_popup_class(self, f):
+        #f.write('/** Initializes the map and the custom popup. */\n')
+        #f.write('function initMap() {\n')
+        #f.write('  map = new google.maps.Map(document.getElementById("map"), {\n')
+        #f.write('    center: {lat: -33.9, lng: 151.1},\n')
+        #f.write('    zoom: 10,\n')
+        #f.write('  });\n')
+        #f.write('\n')
+        #f.write('  popup = new Popup(\n')
+        #f.write('      new google.maps.LatLng(-33.866, 151.196),\n')
+        #f.write('      document.getElementById("content"));\n')
+        #f.write('  popup.setMap(map);\n')
+        #f.write('}\n')
+        #f.write('\n')
+        f.write('/**\n')
+        f.write(' * Returns the Popup class.\n')
+        f.write(' *\n')
+        f.write(' * Unfortunately, the Popup class can only be defined after\n')
+        f.write(' * google.maps.OverlayView is defined, when the Maps API is loaded.\n')
+        f.write(' * This function should be called by initMap.\n')
+        f.write(' */\n')
+        f.write('function createPopupClass() {\n')
+        f.write('  /**\n')
+        f.write('   * A customized popup on the map.\n')
+        f.write('   * @param {!google.maps.LatLng} position\n')
+        f.write('   * @param {!Element} content The bubble div.\n')
+        f.write('   * @constructor\n')
+        f.write('   * @extends {google.maps.OverlayView}\n')
+        f.write('   */\n')
+        f.write('  function Popup(position, content) {\n')
+        f.write('    this.position = position;\n')
+        f.write('\n')
+        f.write('    content.classList.add("popup-bubble");\n')
+        f.write('\n')
+        f.write('    // This zero-height div is positioned at the bottom of the bubble.\n')
+        f.write('    var bubbleAnchor = document.createElement("div");\n')
+        f.write('    bubbleAnchor.classList.add("popup-bubble-anchor");\n')
+        f.write('    bubbleAnchor.appendChild(content);\n')
+        f.write('\n')
+        f.write('    // This zero-height div is positioned at the bottom of the tip.\n')
+        f.write('    this.containerDiv = document.createElement("div");\n')
+        f.write('    this.containerDiv.classList.add("popup-container");\n')
+        f.write('    this.containerDiv.appendChild(bubbleAnchor);\n')
+        f.write('\n')
+        f.write('    // Optionally stop clicks, etc., from bubbling up to the map.\n')
+        f.write('    google.maps.OverlayView.preventMapHitsAndGesturesFrom(this.containerDiv);\n')
+        f.write('  }\n')
+        f.write('  // ES5 magic to extend google.maps.OverlayView.\n')
+        f.write('  Popup.prototype = Object.create(google.maps.OverlayView.prototype);\n')
+        f.write('\n')
+        f.write('  /** Called when the popup is added to the map. */\n')
+        f.write('  Popup.prototype.onAdd = function() {\n')
+        f.write('    this.getPanes().floatPane.appendChild(this.containerDiv);\n')
+        f.write('  };\n')
+        f.write('\n')
+        f.write('  /** Called when the popup is removed from the map. */\n')
+        f.write('  Popup.prototype.onRemove = function() {\n')
+        f.write('    if (this.containerDiv.parentElement) {\n')
+        f.write('      this.containerDiv.parentElement.removeChild(this.containerDiv);\n')
+        f.write('    }\n')
+        f.write('  };\n')
+        f.write('\n')
+        f.write('  /** Called each frame when the popup needs to draw itself. */\n')
+        f.write('  Popup.prototype.draw = function() {\n')
+        f.write('    var divPosition = this.getProjection().fromLatLngToDivPixel(this.position);\n')
+        f.write('\n')
+        f.write('    // Hide the popup when it is far out of view.\n')
+        f.write('    var display =\n')
+        f.write('        Math.abs(divPosition.x) < 4000 && Math.abs(divPosition.y) < 4000 ?\n')
+        f.write('        "block" :\n')
+        f.write('        "none";\n')
+        f.write('\n')
+        f.write('    if (display === "block") {\n')
+        f.write('      this.containerDiv.style.left = divPosition.x + "px";\n')
+        f.write('      this.containerDiv.style.top = divPosition.y + "px";\n')
+        f.write('    }\n')
+        f.write('    if (this.containerDiv.style.display !== display) {\n')
+        f.write('      this.containerDiv.style.display = display;\n')
+        f.write('    }\n')
+        f.write('  };\n')
+        f.write('\n')
+        f.write('  return Popup;\n')
+        f.write('}')
+        f.write('function initCallback(){')
+        f.write('  Popup = createPopupClass();\n')
+        f.write('}')
+
+    def write_popup_content(self, f, id, content):
+        f.write('<div id="popup-' + str(id) + '-content">')
+        f.write(content)
+        f.write('</div>')
+
+    def write_popup_contents_in_dom(self, f):
+        for p in self.popups:
+            id = p[0]
+            content = p[3]
+            self.write_popup_content(f, id, content)
+
+    def write_popup_instantation(self, f, idx, popup_id, lat, lng):
+        f.write('  console.log("SEARChing: popup-' + str(popup_id) + '-content");')
+        f.write('  var popup' + str(idx) + ' = new Popup(\n')
+        f.write('      new google.maps.LatLng(' + str(lat) + ', ' + str(lng) + '),\n')
+        f.write('      document.getElementById("popup-' + str(popup_id) + '-content"));\n')
+        f.write('  popup' + str(idx) + '.setMap(map);\n')
+
+    def write_popup_instantations(self, f):
+        count = 0
+        for p in self.popups:
+            popup_id = p[0]
+            lat = p[1]
+            lng = p[2]
+            self.write_popup_instantation(f, count, popup_id, lat, lng)
+            count = count + 1
 
 if __name__ == "__main__":
 
@@ -472,7 +564,7 @@ if __name__ == "__main__":
     mymap.heatmap(path4[0], path4[1], threshold=10, radius=40)
     mymap.heatmap(path3[0], path3[1], threshold=10, radius=40, dissipating=False, gradient=[(30,30,30,0), (30,30,30,1), (50, 50, 50, 1)])
     mymap.scatter(path4[0], path4[1], c='r', marker=True)
-    mymap.scatter(path4[0], path4[1], s=90, marker=False, alpha=0.9, symbol='x', c='red', edge_width=4)
+    mymap.scatter(path4[0], path4[1], s=90, marker=False, alpha=0.1)
     # Get more points with:
     # http://www.findlatitudeandlongitude.com/click-lat-lng-list/
     scatter_path = ([37.424435, 37.424417, 37.424417, 37.424554, 37.424775, 37.425099, 37.425235, 37.425082, 37.424656, 37.423957, 37.422952, 37.421759, 37.420447, 37.419135, 37.417822, 37.417209],
