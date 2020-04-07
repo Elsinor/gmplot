@@ -44,8 +44,13 @@ make creating exploratory map views effortless. Here's a crash course:
     hidden_gem_lat, hidden_gem_lon = 37.770776, -122.461689
     gmap.marker(hidden_gem_lat, hidden_gem_lon, 'cornflowerblue')
 
+
+    # Popup
+    gmap.popup("popupId", 37.766956, -122.438481, "<p>Popup Content</p>")
+    
     # Draw
     gmap.draw("my_map.html")
+   
 
 .. image:: https://imgur.com/C6dnec8.png
 
